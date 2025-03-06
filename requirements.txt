@@ -1,0 +1,16 @@
+transformers==4.39.0
+torch==2.2.0
+meshtastic==2.2.13
+llama-cpp-python==0.2.44
+accelerate==0.27.0
+safetensors==0.4.2
+bitsandbytes==0.42.0
+einops>=0.7.0
+protobuf
+sentencepiece
+tiktoken
+numpy<2.0
+setuptools
+requests
+paho-mqtt>=2.0.0
+beautifulsoup4>=4.12.0

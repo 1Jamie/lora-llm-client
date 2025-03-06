@@ -17,6 +17,8 @@ This project runs a DeepSeek-R1-Distill-Qwen-1.5B LLM model as a conversational 
 - Automatic TCP reconnection with exponential backoff
 - Fallback to MQTT when TCP connection fails
 - Support for Mistral-7B-Instruct-v0.2-GGUF model
+- Comprehensive testing and diagnostic tools
+- Device configuration utilities
 
 ## Setup
 
@@ -31,8 +33,11 @@ This script will:
 - Set up your Meshtastic device configuration
 - Configure the LLM agent with your preferred settings
 - Create all necessary configuration files
-- Install required dependencies
+- Install required dependencies in a Python virtual environment
 - Download the LLM model (if needed)
+- Set up proper authentication if needed
+
+The script automatically creates and uses a Python virtual environment to isolate dependencies. If a virtual environment already exists, it will use the existing one instead of creating a new one.
 
 For manual setup, follow these steps:
 
@@ -66,7 +71,26 @@ pip install -r requirements.txt
 
 ### 3. Configure Meshtastic Devices
 
-Your Meshtastic devices need to be configured to use MQTT. You can use our configuration script:
+Your Meshtastic devices need to be configured properly to work with the agent. You can use our comprehensive device configuration script:
+
+```bash
+# For a device connected via USB:
+./configure_meshtastic_device.py --interface serial --mqtt-server 192.168.1.100
+
+# For a device connected via network:
+./configure_meshtastic_device.py --interface tcp --tcp-host 192.168.1.200 --mqtt-server 192.168.1.100
+
+# Configure with authentication
+./configure_meshtastic_device.py --mqtt-server 192.168.1.100 --mqtt-username user --mqtt-password pass
+
+# Configure a dedicated LLM channel with a custom name and PSK
+./configure_meshtastic_device.py --mqtt-server 192.168.1.100 --channel-name "AI_Agent" --channel-psk "secretkey"
+
+# Just show device info without making changes
+./configure_meshtastic_device.py --info-only
+```
+
+Or you can use the simpler MQTT-specific configuration tool:
 
 ```bash
 # For a device connected via USB:
@@ -126,13 +150,13 @@ For testing without physical Meshtastic devices, you can use the simulation scri
 ./simulate_meshtastic_node.py
 
 # Specify a custom node ID
-./simulate_meshtastic_node.py --node-id !mynode1234
+./simulate_meshtastic_node.py --node-id abcd1234
 
 # Auto-respond to direct messages
 ./simulate_meshtastic_node.py --auto-respond
 
 # Send a direct message to the agent at startup
-./simulate_meshtastic_node.py --agent-id !agent1234 --message "Hello agent"
+./simulate_meshtastic_node.py --agent-id abcd1234 --message "Hello agent"
 
 # Send a broadcast message at startup
 ./simulate_meshtastic_node.py --message "Hello network" --broadcast
@@ -141,7 +165,10 @@ For testing without physical Meshtastic devices, you can use the simulation scri
 In interactive mode, you can:
 - Send broadcast messages with `b <message>`
 - Send direct messages with `d <node_id> <message>`
+- Send LLM channel messages with `l <message>`
+- List known nodes with `n`
 - View node info with `i`
+- Toggle auto-respond with `a`
 - Quit with `q`
 
 This is useful for:
@@ -150,7 +177,41 @@ This is useful for:
 - Simulating multiple nodes for testing
 - Verifying direct messaging functionality
 
-### 7. Run the Agent
+### 7. Test TCP Connection
+
+To test the TCP connection to your Meshtastic device:
+
+```bash
+# Test basic TCP connectivity
+./test_tcp_connection.py --host 192.168.1.200
+
+# Test with reconnection capabilities
+./test_tcp_connection.py --host 192.168.1.200 --test-reconnect
+
+# Send a test message via TCP
+./test_tcp_connection.py --host 192.168.1.200 --test-message "Hello via TCP"
+```
+
+If you encounter issues, see the [TCP Troubleshooting Guide](TCP_TROUBLESHOOTING.md).
+
+### 8. Test LLM Channel
+
+To test the dedicated LLM channel functionality:
+
+```bash
+# Test the LLM channel with default settings
+./test_llm_channel.py
+
+# Use custom channel topics
+./test_llm_channel.py --llm-channel "custom/llm/channel" --response-channel "custom/response/channel"
+
+# Test with authentication
+./test_llm_channel.py --mqtt-username user --mqtt-password pass
+```
+
+For more information on channel configuration, see the [Channel Configuration Guide](CHANNEL_CONFIGURATION.md).
+
+### 9. Run the Agent
 
 ```bash
 python main.py --mqtt-host <MQTT_HOST> --mqtt-port <MQTT_PORT> --tcp-host <TCP_HOST> --tcp-port <TCP_PORT>
@@ -170,7 +231,7 @@ Where:
 - `startup_message` can be "yes", "no", or "default" (uses config.py setting)
 - `llm_channel` can be "yes", "no", or "default" (uses config.py setting)
 
-### 8. Testing Hybrid Messaging
+### 10. Testing Hybrid Messaging
 
 The system now uses a hybrid approach where it:
 - Receives messages via MQTT
@@ -197,6 +258,37 @@ python test_hybrid_messaging.py --test-duration 120
 ```
 
 For more detailed information on the hybrid messaging approach, see the [Hybrid Messaging Documentation](docs/hybrid_messaging.md).
+
+## Running the Agent
+
+To start the agent with default settings:
+
+```bash
+./start.sh
+```
+
+The start script automatically:
+- Detects if a virtual environment exists and activates it
+- Checks for CUDA availability and uses GPU if available
+- Tests connectivity to MQTT broker and Meshtastic device
+- Downloads the model if not already present
+- Starts the agent with appropriate settings
+
+You can also provide custom parameters:
+
+```bash
+# Custom MQTT and TCP settings
+./start.sh 192.168.1.100 1883 192.168.1.200 4403
+
+# With private mode (only respond to direct messages)
+./start.sh 192.168.1.100 1883 192.168.1.200 4403 private
+
+# Without startup message
+./start.sh 192.168.1.100 1883 192.168.1.200 4403 broadcast no
+
+# Without dedicated LLM channel
+./start.sh 192.168.1.100 1883 192.168.1.200 4403 broadcast yes no
+```
 
 ## Testing
 

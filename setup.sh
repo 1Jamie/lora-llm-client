@@ -44,6 +44,25 @@ command_exists() {
     command -v "$1" &> /dev/null
 }
 
+# Function to check if a setting exists in a config file
+setting_exists() {
+    local file=$1
+    local pattern=$2
+    
+    if [ ! -f "$file" ]; then
+        # File doesn't exist, so the setting doesn't exist
+        return 1
+    fi
+    
+    if grep -q "$pattern" "$file"; then
+        # Setting found
+        return 0
+    else
+        # Setting not found
+        return 1
+    fi
+}
+
 # Function to attempt multiple connections to Meshtastic
 try_meshtastic_connection() {
     local host=$1
@@ -62,11 +81,14 @@ try:
     interface = meshtastic.tcp_interface.TCPInterface('$host', $port)
     print('SUCCESS: Connected to Meshtastic')
     # Try to get channels
-    channels = interface.getNode().getChannels()
-    print(f'Found {len(channels)} channels')
-    for idx, channel in enumerate(channels):
-        if channel.role != 'DISABLED':
-            print(f'Channel {idx}: {channel.settings.name}')
+    if hasattr(interface, 'localNode') and hasattr(interface.localNode, 'channels'):
+        channels = interface.localNode.channels
+        print(f'Found {len(channels)} channels')
+        for idx, channel in enumerate(channels):
+            if hasattr(channel, 'settings') and hasattr(channel.settings, 'name'):
+                print(f'Channel {idx}: {channel.settings.name}')
+    else:
+        print('No channels found or localNode not available yet')
     exit(0)
 except Exception as e:
     print(f'ERROR: {str(e)}')
@@ -203,49 +225,76 @@ else
     fi
 fi
 
-# Configure Mosquitto
-print_header "Mosquitto MQTT Broker Configuration"
-print_info "We'll set up Mosquitto with username/password authentication for Meshtastic."
+# MQTT Configuration
+print_header "MQTT Broker Configuration"
 
-# Check if config.py exists and extract values
-CONFIG_FILE="config.py"
+# Define configuration files
+MQTT_CONFIG_FILE="/etc/mosquitto/mosquitto.conf"
+MQTT_CONFIG_DIR="/etc/mosquitto/conf.d"
+MESHTASTIC_CONFIG="${MQTT_CONFIG_DIR}/meshtastic.conf"
+PASSWD_FILE="/etc/mosquitto/passwd"
 
-if [ -f "$CONFIG_FILE" ]; then
-    print_info "Found existing config.py, will use values from there as defaults."
-    
-    # Extract Meshtastic configuration from config.py
-    MESHTASTIC_IP=$(extract_config_value "$CONFIG_FILE" "MESHTASTIC_IP" "10.0.0.133")
-    MESHTASTIC_PORT=$(extract_config_value "$CONFIG_FILE" "MESHTASTIC_PORT" "4403")
-    
-    # Extract MQTT configuration from config.py
-    MQTT_BROKER=$(extract_config_value "$CONFIG_FILE" "MQTT_BROKER" "$IP_ADDRESS")
-    MQTT_PORT=$(extract_config_value "$CONFIG_FILE" "MQTT_PORT" "1883")
-    MQTT_USERNAME=$(extract_config_value "$CONFIG_FILE" "MQTT_USERNAME" "meshtastic")
-    MQTT_PASSWORD=$(extract_config_value "$CONFIG_FILE" "MQTT_PASSWORD" "meshtastic123")
-    
-    # Extract LLM channel configuration
-    LLM_CHANNEL=$(extract_config_value "$CONFIG_FILE" "LLM_CHANNEL" "msh/US/2/json/llm/")
-    LLM_RESPONSE_CHANNEL=$(extract_config_value "$CONFIG_FILE" "LLM_RESPONSE_CHANNEL" "msh/US/2/json/llmres/")
-    
-    # Extract model configuration
-    MODEL_ID=$(extract_config_value "$CONFIG_FILE" "MODEL_ID" "TheBloke/Mistral-7B-Instruct-v0.2-GGUF")
-    MODEL_LOCAL_PATH=$(extract_config_value "$CONFIG_FILE" "MODEL_LOCAL_PATH" "./models/mistral-7b-instruct-v0.2.Q4_K_M.gguf")
-    
-    print_info "Using Meshtastic IP: $MESHTASTIC_IP"
-    print_info "Using MQTT Broker: $MQTT_BROKER"
-    print_info "Using LLM Channel: $LLM_CHANNEL"
+# Check if we already have MQTT configured in either file
+print_info "Checking existing MQTT configuration..."
+
+# Check if config directory inclusion exists
+NEEDS_CONFDIR=true
+if setting_exists "$MQTT_CONFIG_FILE" "include_dir ${MQTT_CONFIG_DIR}"; then
+    NEEDS_CONFDIR=false
+    print_success "Include directive for conf.d already exists in main config."
 else
-    print_warning "config.py not found, will use default values."
-    MESHTASTIC_IP="10.0.0.133"
-    MESHTASTIC_PORT="4403"
-    MQTT_BROKER="$IP_ADDRESS"
-    MQTT_PORT="1883"
-    MQTT_USERNAME="meshtastic"
-    MQTT_PASSWORD="meshtastic123"
-    LLM_CHANNEL="msh/US/2/json/llm/"
-    LLM_RESPONSE_CHANNEL="msh/US/2/json/llmres/"
-    MODEL_ID="TheBloke/Mistral-7B-Instruct-v0.2-GGUF"
-    MODEL_LOCAL_PATH="./models/mistral-7b-instruct-v0.2.Q4_K_M.gguf"
+    print_info "Need to add include directive for conf.d to main config."
+fi
+
+# Get MQTT broker and port
+if command_exists ip; then
+    MQTT_BROKER=$(ip route get 1 | awk '{print $7;exit}')
+else
+    MQTT_BROKER="localhost"
+fi
+print_info "Using MQTT broker address: $MQTT_BROKER"
+
+MQTT_PORT=1883
+print_info "Using MQTT port: $MQTT_PORT"
+
+# Check if listener configurations exist
+NEEDS_LISTENER=true
+if setting_exists "$MQTT_CONFIG_FILE" "listener ${MQTT_PORT}" || setting_exists "$MESHTASTIC_CONFIG" "listener ${MQTT_PORT}"; then
+    NEEDS_LISTENER=false
+    print_success "MQTT listener on port ${MQTT_PORT} already configured."
+else
+    print_info "Need to add MQTT listener configuration."
+fi
+
+# Check if websocket listener exists
+NEEDS_WEBSOCKET=true
+if setting_exists "$MQTT_CONFIG_FILE" "listener 9001" || setting_exists "$MESHTASTIC_CONFIG" "listener 9001"; then
+    NEEDS_WEBSOCKET=false
+    print_success "WebSocket listener already configured."
+else
+    print_info "Need to add WebSocket listener configuration."
+fi
+
+# Default credentials
+MQTT_USERNAME="meshtastic"
+MQTT_PASSWORD="meshtastic"
+
+# Check authentication configuration
+NEEDS_AUTH=true
+AUTH_EXISTS=false
+if setting_exists "$MQTT_CONFIG_FILE" "allow_anonymous" || setting_exists "$MESHTASTIC_CONFIG" "allow_anonymous"; then
+    AUTH_EXISTS=true
+fi
+
+if setting_exists "$MQTT_CONFIG_FILE" "password_file" || setting_exists "$MESHTASTIC_CONFIG" "password_file"; then
+    AUTH_EXISTS=true
+fi
+
+if [ "$AUTH_EXISTS" = true ]; then
+    NEEDS_AUTH=false
+    print_success "Authentication already configured."
+else
+    print_info "Need to configure authentication."
 fi
 
 # Ask for MQTT credentials
@@ -254,61 +303,168 @@ read -r NEW_MQTT_USERNAME
 MQTT_USERNAME=${NEW_MQTT_USERNAME:-$MQTT_USERNAME}
 
 ask_user "Enter MQTT password (default: $MQTT_PASSWORD):"
-read -s NEW_MQTT_PASSWORD
-echo
+read -r NEW_MQTT_PASSWORD
 MQTT_PASSWORD=${NEW_MQTT_PASSWORD:-$MQTT_PASSWORD}
 
-# Create Mosquitto password file
-print_info "Creating password file..."
-echo "$MQTT_USERNAME:$MQTT_PASSWORD" > mosquitto_pwd.temp
-sudo mosquitto_passwd -c /etc/mosquitto/passwd "$MQTT_USERNAME" "$MQTT_PASSWORD" 2>/dev/null || {
-    sudo touch /etc/mosquitto/passwd
-    sudo mosquitto_passwd -b /etc/mosquitto/passwd "$MQTT_USERNAME" "$MQTT_PASSWORD"
-}
-rm -f mosquitto_pwd.temp
-print_success "Password file created successfully!"
+# Configure MQTT
+if [ "$NEEDS_CONFDIR" = true ] || [ "$NEEDS_LISTENER" = true ] || [ "$NEEDS_AUTH" = true ] || [ "$NEEDS_WEBSOCKET" = true ]; then
+    print_info "Configuring MQTT broker..."
+    
+    # Create conf.d directory if it doesn't exist
+    if [ ! -d "$MQTT_CONFIG_DIR" ]; then
+        print_info "Creating configuration directory ${MQTT_CONFIG_DIR}..."
+        sudo mkdir -p "$MQTT_CONFIG_DIR"
+    fi
+    
+    # Update main config file if needed
+    if [ "$NEEDS_CONFDIR" = true ]; then
+        print_info "Updating main configuration with include directive..."
+        
+        # Backup existing config if it exists
+        if [ -f "$MQTT_CONFIG_FILE" ]; then
+            sudo cp "$MQTT_CONFIG_FILE" "${MQTT_CONFIG_FILE}.backup"
+        fi
+        
+        # Check if the file exists and has content
+        if [ ! -f "$MQTT_CONFIG_FILE" ] || [ ! -s "$MQTT_CONFIG_FILE" ]; then
+            # Create a new config with basic settings
+            sudo bash -c "cat > $MQTT_CONFIG_FILE << EOF
+# Mosquitto Configuration for Meshtastic
+# Created by setup.sh
 
-# Create Mosquitto configuration
-print_info "Configuring Mosquitto..."
-sudo tee /etc/mosquitto/conf.d/meshtastic.conf > /dev/null << EOF
-# Meshtastic MQTT Configuration
-listener 1883
-allow_anonymous false
-password_file /etc/mosquitto/passwd
+# Basic configuration
+pid_file /run/mosquitto/mosquitto.pid
+persistence true
+persistence_location /var/lib/mosquitto/
+log_dest file /var/log/mosquitto/mosquitto.log
+log_type error
+log_type warning
+log_type notice
+log_type information
+
+# Include conf.d directory
+include_dir ${MQTT_CONFIG_DIR}
+EOF"
+        else
+            # Append include directive to existing file
+            sudo bash -c "echo -e \"\n# Include conf.d directory\ninclude_dir ${MQTT_CONFIG_DIR}\" >> $MQTT_CONFIG_FILE"
+        fi
+        
+        print_success "Updated main configuration file"
+    fi
+    
+    # Create a temporary file for the config
+    TEMP_CONFIG=$(mktemp)
+    
+    # Add header to the temp config
+    cat > "$TEMP_CONFIG" << EOF
+# Meshtastic-specific MQTT configuration
+# Created/updated by setup.sh on $(date)
 EOF
+    
+    # Add listener configuration if needed
+    if [ "$NEEDS_LISTENER" = true ]; then
+        cat >> "$TEMP_CONFIG" << EOF
 
-# Restart Mosquitto
-print_info "Restarting Mosquitto service..."
-sudo systemctl restart mosquitto
-if [ $? -eq 0 ]; then
-    print_success "Mosquitto restarted successfully!"
+# MQTT listener configuration
+listener ${MQTT_PORT}
+socket_domain ipv4
+per_listener_settings true
+protocol mqtt
+EOF
+        print_info "Added MQTT listener configuration"
+    fi
+    
+    # Add authentication configuration if needed
+    if [ "$NEEDS_AUTH" = true ]; then
+        cat >> "$TEMP_CONFIG" << EOF
+
+# Authentication configuration
+allow_anonymous false
+password_file ${PASSWD_FILE}
+EOF
+        print_info "Added authentication configuration"
+    fi
+    
+    # Add WebSocket configuration if needed
+    if [ "$NEEDS_WEBSOCKET" = true ]; then
+        cat >> "$TEMP_CONFIG" << EOF
+
+# WebSocket configuration
+listener 9001
+protocol websockets
+allow_anonymous false
+password_file ${PASSWD_FILE}
+EOF
+        print_info "Added WebSocket configuration"
+    fi
+    
+    # Check if we need to update meshtastic.conf
+    if [ -f "$MESHTASTIC_CONFIG" ]; then
+        # Merge with existing file
+        sudo bash -c "cat $TEMP_CONFIG >> $MESHTASTIC_CONFIG"
+        print_success "Updated Meshtastic configuration"
+    else
+        # Create new file
+        sudo bash -c "cat $TEMP_CONFIG > $MESHTASTIC_CONFIG"
+        print_success "Created Meshtastic configuration"
+    fi
+    
+    # Remove temp file
+    rm "$TEMP_CONFIG"
+    
+    # Create password file if auth required
+    if [ "$NEEDS_AUTH" = true ]; then
+        print_info "Setting up authentication..."
+        sudo touch "$PASSWD_FILE"
+        sudo mosquitto_passwd -b "$PASSWD_FILE" "$MQTT_USERNAME" "$MQTT_PASSWORD"
+        sudo chmod 600 "$PASSWD_FILE"
+        print_success "Created password file with username: $MQTT_USERNAME"
+    fi
+    
+    # Restart Mosquitto
+    print_info "Restarting Mosquitto service..."
+    sudo systemctl restart mosquitto
+    sudo systemctl enable mosquitto
+    
+    # Check if service is running
+    if sudo systemctl is-active --quiet mosquitto; then
+        print_success "Mosquitto MQTT broker is running!"
+    else
+        print_error "Failed to start Mosquitto service."
+        print_error "Check the service status with: sudo systemctl status mosquitto"
+        exit 1
+    fi
 else
-    print_error "Failed to restart Mosquitto. Please check the service status manually."
-    exit 1
+    print_success "MQTT already configured, no changes needed."
 fi
 
-# Install Python dependencies
+# Virtual Environment Setup
+print_header "Virtual Environment Setup"
+if [ -d "venv" ]; then
+    print_success "Virtual environment already exists."
+    print_info "Activating existing virtual environment..."
+    source venv/bin/activate
+else
+    print_info "Creating virtual environment..."
+    python3 -m venv venv
+    if [ -d "venv" ]; then
+        print_success "Virtual environment created successfully."
+        print_info "Activating virtual environment..."
+        source venv/bin/activate
+    else
+        print_error "Failed to create virtual environment. Using system Python."
+    fi
+fi
+
+# Install Python requirements
 print_header "Installing Python Dependencies"
 print_info "Installing required Python packages..."
-
-# Create virtual environment if it doesn't exist
-if [ ! -d "venv" ]; then
-    print_info "Creating Python virtual environment..."
-    python3 -m venv venv
-    print_success "Virtual environment created!"
-fi
-
-# Activate virtual environment
-print_info "Activating virtual environment..."
-source venv/bin/activate
-
-# Install required packages
-print_info "Installing Python packages..."
-pip install -r requirements.txt
+pip3 install -r requirements.txt
 if [ $? -ne 0 ]; then
     # If requirements.txt doesn't exist, install packages directly
     print_warning "requirements.txt not found. Installing packages directly..."
-    pip install meshtastic paho-mqtt requests tqdm torch transformers llama-cpp-python
+    pip3 install meshtastic paho-mqtt requests tqdm torch transformers llama-cpp-python
 fi
 
 print_success "Python packages installed successfully!"
@@ -319,20 +475,20 @@ print_info "Now we need to configure your Meshtastic device."
 print_info "You'll need to access the Meshtastic web interface on your device."
 
 # Ask for Meshtastic device details
-ask_user "Enter Meshtastic device IP address (default: $MESHTASTIC_IP):"
+ask_user "Enter Meshtastic device IP address (default: 10.0.0.133):"
 read -r NEW_MESHTASTIC_IP
-MESHTASTIC_IP=${NEW_MESHTASTIC_IP:-$MESHTASTIC_IP}
+MESHTASTIC_IP=${NEW_MESHTASTIC_IP:-10.0.0.133}
 
-ask_user "Enter Meshtastic TCP port (default: $MESHTASTIC_PORT):"
+ask_user "Enter Meshtastic TCP port (default: 4403):"
 read -r NEW_MESHTASTIC_PORT
-MESHTASTIC_PORT=${NEW_MESHTASTIC_PORT:-$MESHTASTIC_PORT}
+MESHTASTIC_PORT=${NEW_MESHTASTIC_PORT:-4403}
 
 # Verify connection to Meshtastic device
 print_info "Checking connection to Meshtastic device at $MESHTASTIC_IP:$MESHTASTIC_PORT..."
 
 if ! command_exists meshtastic; then
     print_warning "Meshtastic CLI not found. Installing..."
-    pip install meshtastic
+    pip3 install meshtastic
     if ! command_exists meshtastic; then
         print_error "Failed to install Meshtastic CLI. Continuing without CLI verification."
     fi
@@ -376,36 +532,36 @@ fi
 print_header "Updating Configuration"
 print_info "Now we'll update the config.py file with your settings."
 
-if [ -f "$CONFIG_FILE" ]; then
+if [ -f "config.py" ]; then
     # Update existing config file
     print_info "Updating existing config.py..."
     # Create a backup
-    cp "$CONFIG_FILE" "${CONFIG_FILE}.bak"
+    cp "config.py" "config.py.bak"
     
     # Update model configuration
-    sed -i "s|MODEL_ID = .*|MODEL_ID = \"$MODEL_ID\"|" "$CONFIG_FILE"
-    sed -i "s|MODEL_LOCAL_PATH = .*|MODEL_LOCAL_PATH = \"$MODEL_LOCAL_PATH\"|" "$CONFIG_FILE"
+    sed -i "s|MODEL_ID = .*|MODEL_ID = \"TheBloke/Mistral-7B-Instruct-v0.2-GGUF\"|" "config.py"
+    sed -i "s|MODEL_LOCAL_PATH = .*|MODEL_LOCAL_PATH = \"./models/mistral-7b-instruct-v0.2.Q4_K_M.gguf\"|" "config.py"
     
     # Update Meshtastic configuration
-    sed -i "s|MESHTASTIC_IP = .*|MESHTASTIC_IP = \"$MESHTASTIC_IP\"|" "$CONFIG_FILE"
-    sed -i "s|MESHTASTIC_PORT = .*|MESHTASTIC_PORT = $MESHTASTIC_PORT|" "$CONFIG_FILE"
+    sed -i "s|MESHTASTIC_IP = .*|MESHTASTIC_IP = \"$MESHTASTIC_IP\"|" "config.py"
+    sed -i "s|MESHTASTIC_PORT = .*|MESHTASTIC_PORT = $MESHTASTIC_PORT|" "config.py"
     
     # Update MQTT configuration
-    sed -i "s|MQTT_BROKER = .*|MQTT_BROKER = \"$MQTT_BROKER\"|" "$CONFIG_FILE"
-    sed -i "s|MQTT_PORT = .*|MQTT_PORT = $MQTT_PORT|" "$CONFIG_FILE"
-    sed -i "s|MQTT_USERNAME = .*|MQTT_USERNAME = \"$MQTT_USERNAME\"|" "$CONFIG_FILE"
-    sed -i "s|MQTT_PASSWORD = .*|MQTT_PASSWORD = \"$MQTT_PASSWORD\"|" "$CONFIG_FILE"
-    sed -i "s|LLM_CHANNEL = .*|LLM_CHANNEL = \"$LLM_CHANNEL\"|" "$CONFIG_FILE"
-    sed -i "s|LLM_RESPONSE_CHANNEL = .*|LLM_RESPONSE_CHANNEL = \"$LLM_RESPONSE_CHANNEL\"|" "$CONFIG_FILE"
+    sed -i "s|MQTT_BROKER = .*|MQTT_BROKER = \"$MQTT_BROKER\"|" "config.py"
+    sed -i "s|MQTT_PORT = .*|MQTT_PORT = $MQTT_PORT|" "config.py"
+    sed -i "s|MQTT_USERNAME = .*|MQTT_USERNAME = \"$MQTT_USERNAME\"|" "config.py"
+    sed -i "s|MQTT_PASSWORD = .*|MQTT_PASSWORD = \"$MQTT_PASSWORD\"|" "config.py"
+    sed -i "s|LLM_CHANNEL = .*|LLM_CHANNEL = \"msh/US/2/json/llm/\"|" "config.py"
+    sed -i "s|LLM_RESPONSE_CHANNEL = .*|LLM_RESPONSE_CHANNEL = \"msh/US/2/json/llmres/\"|" "config.py"
     
     print_success "Updated config.py with your settings!"
 else
     # Create new config file
     print_info "Creating new config.py..."
-    cat > "$CONFIG_FILE" << EOF
+    cat > "config.py" << EOF
 # Model configuration
-MODEL_ID = "$MODEL_ID"
-MODEL_LOCAL_PATH = "$MODEL_LOCAL_PATH"
+MODEL_ID = "TheBloke/Mistral-7B-Instruct-v0.2-GGUF"
+MODEL_LOCAL_PATH = "./models/mistral-7b-instruct-v0.2.Q4_K_M.gguf"
 USE_GGUF = True
 MAX_NEW_TOKENS = 512
 TEMPERATURE = 0.7
@@ -424,8 +580,8 @@ MQTT_USERNAME = "$MQTT_USERNAME"
 MQTT_PASSWORD = "$MQTT_PASSWORD"
 SEND_STARTUP_MESSAGE = True
 USE_LLM_CHANNEL = True
-LLM_CHANNEL = "$LLM_CHANNEL"
-LLM_RESPONSE_CHANNEL = "$LLM_RESPONSE_CHANNEL"
+LLM_CHANNEL = "msh/US/2/json/llm/"
+LLM_RESPONSE_CHANNEL = "msh/US/2/json/llmres/"
 
 # System prompt for the conversational agent
 SYSTEM_PROMPT = """You are a helpful AI assistant connected via Meshtastic mesh network.
@@ -482,8 +638,8 @@ def main():
     parser.add_argument("--mqtt-port", type=int, default=$MQTT_PORT, help="MQTT broker port")
     parser.add_argument("--mqtt-username", type=str, default="$MQTT_USERNAME", help="MQTT username")
     parser.add_argument("--mqtt-password", type=str, default="$MQTT_PASSWORD", help="MQTT password")
-    parser.add_argument("--llm-channel", type=str, default="$LLM_CHANNEL", help="LLM channel topic")
-    parser.add_argument("--llm-response-channel", type=str, default="$LLM_RESPONSE_CHANNEL", help="LLM response channel topic")
+    parser.add_argument("--llm-channel", type=str, default="msh/US/2/json/llm/", help="LLM channel topic")
+    parser.add_argument("--llm-response-channel", type=str, default="msh/US/2/json/llmres/", help="LLM response channel topic")
     parser.add_argument("--message", type=str, default="Hello from test script!", help="Message to send")
     args = parser.parse_args()
     
@@ -583,13 +739,13 @@ print_info "Or simply use: ./start.sh (which will use values from config.py)"
 
 # Print configuration summary
 print_header "Configuration Summary"
-echo -e "${CYAN}Model:${NC} $MODEL_ID"
-echo -e "${CYAN}Model Path:${NC} $MODEL_LOCAL_PATH"
+echo -e "${CYAN}Model:${NC} TheBloke/Mistral-7B-Instruct-v0.2-GGUF"
+echo -e "${CYAN}Model Path:${NC} ./models/mistral-7b-instruct-v0.2.Q4_K_M.gguf"
 echo -e "${CYAN}Meshtastic Device:${NC} $MESHTASTIC_IP:$MESHTASTIC_PORT"
 echo -e "${CYAN}MQTT Broker:${NC} $MQTT_BROKER:$MQTT_PORT"
 echo -e "${CYAN}MQTT Credentials:${NC} $MQTT_USERNAME:$MQTT_PASSWORD"
-echo -e "${CYAN}LLM Channel:${NC} $LLM_CHANNEL"
-echo -e "${CYAN}LLM Response Channel:${NC} $LLM_RESPONSE_CHANNEL"
+echo -e "${CYAN}LLM Channel:${NC} msh/US/2/json/llm/"
+echo -e "${CYAN}LLM Response Channel:${NC} msh/US/2/json/llmres/"
 echo
 
 print_info "Important notes:"

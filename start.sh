@@ -47,15 +47,21 @@ if [ -f "$GGUF_MODEL_PATH" ]; then
     MODEL_ARGS="--model TheBloke/Mistral-7B-Instruct-v0.2-GGUF"
 else
     echo -e "${YELLOW}Local GGUF model not found. Downloading from HuggingFace.${NC}"
+    # Check and activate virtual environment if it exists
+    if [ -d "venv" ]; then
+        echo -e "${GREEN}Using virtual environment...${NC}"
+        source venv/bin/activate
+    fi
+    
     # Install tqdm if not already installed
-    pip install tqdm --quiet
+    pip3 install tqdm --quiet
     
     # Create models directory if it doesn't exist
     mkdir -p ./models
     
     # Download the model
     echo -e "${GREEN}Downloading GGUF model from HuggingFace. This might take a while...${NC}"
-    python download_model.py --gguf --model TheBloke/Mistral-7B-Instruct-v0.2-GGUF --gguf-file mistral-7b-instruct-v0.2.Q4_K_M.gguf
+    python3 download_model.py --gguf --model TheBloke/Mistral-7B-Instruct-v0.2-GGUF --gguf-file mistral-7b-instruct-v0.2.Q4_K_M.gguf
     
     if [ -f "$GGUF_MODEL_PATH" ]; then
         echo -e "${GREEN}Successfully downloaded GGUF model${NC}"
@@ -104,5 +110,11 @@ fi
 
 # Start the agent
 echo -e "${GREEN}Starting agent with hybrid messaging:${NC}"
+# Check and activate virtual environment if it exists
+if [ -d "venv" ]; then
+    echo -e "${GREEN}Using virtual environment...${NC}"
+    source venv/bin/activate
+fi
+
 echo -e "${GREEN}python3 main.py $MODEL_ARGS --mqtt-host $MQTT_HOST --mqtt-port $MQTT_PORT --tcp-host $TCP_HOST --tcp-port $TCP_PORT $PRIVATE_ARGS $STARTUP_ARGS $LLM_ARGS $USE_CPU${NC}"
 python3 main.py $MODEL_ARGS --mqtt-host $MQTT_HOST --mqtt-port $MQTT_PORT --tcp-host $TCP_HOST --tcp-port $TCP_PORT $PRIVATE_ARGS $STARTUP_ARGS $LLM_ARGS $USE_CPU
